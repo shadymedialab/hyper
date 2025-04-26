@@ -1,0 +1,68 @@
+name: Dependabot Auto-Merge
+on:
+  workflow_run:
+    workflows: ["Node CI"]
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependabot:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Download PR number artifact
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: ${{ github.event.workflow_run.workflow_id }}
+          run_id: ${{ github.event.workflow_run.id }}
+          name: pr_num
+          path: .
+          
+      - name: Read PR number
+        id: pr_number
+        run: |
+          if [ -f pr_num.txt ]; then
+            echo "pr_number=$(cat pr_num.txt)" >> $GITHUB_OUTPUT
+          else
+            echo "No PR number found"
+            exit 0
+          fi
+      
+      - name: Check if PR is from Dependabot
+        if: steps.pr_number.outputs.pr_number != ''
+        id: is_dependabot
+        run: |
+          PR_INFO=$(gh pr view ${{ steps.pr_number.outputs.pr_number }} --json author)
+          AUTHOR=$(echo "$PR_INFO" | jq -r '.author.login')
+          if [ "$AUTHOR" == "dependabot[bot]" ]; then
+            echo "is_dependabot=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_dependabot=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Dependabot metadata
+        if: steps.is_dependabot.outputs.is_dependabot == 'true'
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+          pr-number: ${{ steps.pr_number.outputs.pr_number }}
+          
+      - name: Enable auto-merge for Dependabot PRs
+        if: |
+          steps.is_dependabot.outputs.is_dependabot == 'true' && 
+          steps.metadata.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --merge ${{ steps.pr_number.outputs.pr_number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
